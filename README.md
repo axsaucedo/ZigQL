@@ -1,2 +1,2 @@
-# ZigQL: A high-performance relational library implemented in Zig
+# ZigQL: A high-performance relational database implemented in Zig
 
