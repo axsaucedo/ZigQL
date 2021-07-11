@@ -6,6 +6,10 @@ const StatementType = enum {
     SELECT,
 };
 
+const Statement = struct {
+    type: StatementType,
+};
+
 // TODO: Make customizable
 const MAX_INPUT_SIZE: usize = 1000;
 
@@ -31,15 +35,15 @@ fn doMetaCommand(stdout: anytype, line: []u8) !void {
     }
 }
 
-fn prepareStatement(line: []u8) !StatementType {
+fn prepareStatement(line: []u8) !Statement {
     if (line.len < 6) {
         return error.CommandError;
     }
     else if (std.mem.eql(u8, line[0..6], "insert")) {
-        return StatementType.INSERT;
+        return Statement{ .type = StatementType.INSERT };
     }
     else if (std.mem.eql(u8, line[0..6], "select")) {
-        return StatementType.SELECT;
+        return Statement{ .type = StatementType.SELECT };
     }
     else {
         // TODO: Throw and catch more specific error
@@ -47,8 +51,8 @@ fn prepareStatement(line: []u8) !StatementType {
     }
 }
 
-fn executeStatement(stdout: anytype, statement: StatementType) !void {
-    switch (statement) {
+fn executeStatement(stdout: anytype, statement: Statement) !void {
+    switch (statement.type) {
         StatementType.INSERT => {
             try stdout.print("Executing insert.\n", .{});
         },
@@ -86,7 +90,7 @@ pub fn main() !void {
             };
         }
         else {
-            var statement: ?StatementType = prepareStatement(line) catch |err| {
+            var statement: ?Statement = prepareStatement(line) catch |err| {
                 try stdout.print("Unrecognized keyword at start of: {s}.\n", .{ line });
                 continue;
             };
