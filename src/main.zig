@@ -8,33 +8,37 @@ fn printPrompt() void {
     std.debug.print("db > ", .{});
 }
 
+fn readInput(bufStream: anytype, allocator: *std.mem.Allocator) []u8 {
+    var line: ?[]u8 = bufStream.readUntilDelimiterOrEofAlloc(allocator, '\n', MAX_INPUT_SIZE) catch |err| {
+        return "";
+    };
+    return line.?;
+}
+
 pub fn main() !void {
     var allocatorWrapper = std.heap.GeneralPurposeAllocator(.{}){};
     //errdefer allocatorWrapper.deinit();
-    const allocator = &allocatorWrapper.allocator;
+    const pAllocator = &allocatorWrapper.allocator;
 
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
 
     try stdout.print("Welcome to the ZigQL prompt.\n", .{});
-    try stdout.print("Type your query or exit() when you're done.\n", .{});
+    try stdout.print("Type your query or .exit when you're done.\n", .{});
 
     // Using bufferedReader for performance
     var bufReader = std.io.bufferedReader(stdin);
-    const bufStream = bufReader.reader();
+    const pBufStream = &bufReader.reader();
 
     while (true) {
         printPrompt();
 
-        var readInput: ?[]u8 = bufStream.readUntilDelimiterOrEofAlloc(allocator, '\n', MAX_INPUT_SIZE) catch |err| {
-            try stdout.print("Error reading as line longer than {} chars\n", .{ MAX_INPUT_SIZE });
-            return;
-        };
-        defer allocator.free(readInput.?);
+        var line: []u8 = readInput(pBufStream, pAllocator);
+        defer pAllocator.free(line);
 
-        if (std.mem.eql(u8, readInput.?, "exit()")) { break; }
+        if (std.mem.eql(u8, line, ".exit")) { break; }
 
-        try stdout.print("Input from alloc: {s} with length {}\n", .{ readInput, readInput.?.len });
+        try stdout.print("Input from alloc: {s} with length {}\n", .{ line, line.len });
     }
 
     try stdout.print("Exiting ZigQL prompt.\n", .{});
