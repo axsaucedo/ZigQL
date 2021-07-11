@@ -1,6 +1,11 @@
 
 const std = @import("std");
 
+const StatementType = enum {
+    INSERT,
+    SELECT,
+};
+
 // TODO: Make customizable
 const MAX_INPUT_SIZE: usize = 1000;
 
@@ -13,6 +18,44 @@ fn readInput(bufStream: anytype, allocator: *std.mem.Allocator) []u8 {
         return "";
     };
     return line.?;
+}
+
+fn doMetaCommand(stdout: anytype, line: []u8) !void {
+    if (std.mem.eql(u8, line, ".exit")) {
+        try stdout.print("Exiting ZigQL prompt.\n", .{});
+        std.process.exit(0);
+    }
+    else {
+        // TODO: Throw and catch more specific error
+        return error.CommandError;
+    }
+}
+
+fn prepareStatement(line: []u8) !StatementType {
+    if (line.len < 6) {
+        return error.CommandError;
+    }
+    else if (std.mem.eql(u8, line[0..6], "insert")) {
+        return StatementType.INSERT;
+    }
+    else if (std.mem.eql(u8, line[0..6], "select")) {
+        return StatementType.SELECT;
+    }
+    else {
+        // TODO: Throw and catch more specific error
+        return error.CommandError;
+    }
+}
+
+fn executeStatement(stdout: anytype, statement: StatementType) !void {
+    switch (statement) {
+        StatementType.INSERT => {
+            try stdout.print("Executing insert.\n", .{});
+        },
+        StatementType.SELECT => {
+            try stdout.print("Executing select.\n", .{});
+        },
+    }
 }
 
 pub fn main() !void {
@@ -36,12 +79,23 @@ pub fn main() !void {
         var line: []u8 = readInput(pBufStream, pAllocator);
         defer pAllocator.free(line);
 
-        if (std.mem.eql(u8, line, ".exit")) {
-            try stdout.print("Exiting ZigQL prompt.\n", .{});
-            break;
+        if (line[0] == '.') {
+            doMetaCommand(&stdout, line) catch |err| {
+                try stdout.print("Unrecognized command: {s}.\n", .{ line });
+                continue;
+            };
         }
         else {
-            try stdout.print("Unrecognized command: {s}.\n", .{ line });
+            var statement: ?StatementType = prepareStatement(line) catch |err| {
+                try stdout.print("Unrecognized keyword at start of: {s}.\n", .{ line });
+                continue;
+            };
+
+            executeStatement(&stdout, statement.?) catch |err| {
+                try stdout.print("Error executing command: {s}.\n", .{ line });
+                continue;
+            };
+            try stdout.print("Executed.\n", .{});
         }
     }
 }
