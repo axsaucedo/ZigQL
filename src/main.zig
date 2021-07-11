@@ -5,6 +5,7 @@ const FrontendErrors = error {
     StatementNotFound,
     StatementIncorrectSyntax,
     CommandError,
+    TableFull,
 };
 
 const COLUMN_USERNAME_SIZE = 32;
@@ -21,6 +22,17 @@ const Row = struct {
     email: [COLUMN_EMAIL_SIZE]u8 = std.mem.zeroes([COLUMN_EMAIL_SIZE]u8),
 };
 
+const PAGE_SIZE: u32 = 4096;
+const ROW_SIZE: u32 = @sizeOf(Row);
+const ROWS_PER_PAGE: u32 = PAGE_SIZE / ROW_SIZE;
+const TABLE_MAX_PAGES: u32 = 100;
+const TABLE_MAX_ROWS: u32 = ROWS_PER_PAGE * TABLE_MAX_PAGES;
+
+const Table = struct {
+    numRows: u32,
+    pages: [TABLE_MAX_PAGES]?[]Row,
+};
+
 const Statement = struct {
     type: StatementType = StatementType.SELECT,
     row: Row = .{},
@@ -28,6 +40,41 @@ const Statement = struct {
 
 // TODO: Make customizable
 const MAX_INPUT_SIZE: usize = 1000;
+
+fn saveRow(source: *Row, destination: *Row) void {
+    const sourceSingSlice: *[1]Row = source;
+    const sourceSlice: []Row = sourceSingSlice;
+    const destinationSingSlice: *[1]Row = destination;
+    const destinationSlice: []Row =  destinationSingSlice;
+    std.mem.copy(Row, destinationSlice, sourceSingSlice);
+}
+
+fn loadRow(source: *Row, destination: *Row) void {
+    const sourceSingSlice: *[1]Row = source;
+    const sourceSlice: []Row = sourceSingSlice;
+    const destinationSingSlice: *[1]Row = destination;
+    const destinationSlice: []Row =  destinationSingSlice;
+    std.mem.copy(Row, destinationSlice, sourceSingSlice);
+}
+
+fn rowSlot(allocator: *std.mem.Allocator, table: *Table, rowNum: u32) !*Row {
+    const pageNum: u32 = rowNum / ROWS_PER_PAGE;
+    // TODO: Check max age
+    if (table.pages[pageNum] == null) {
+        table.pages[pageNum] = try allocator.alloc(Row, ROWS_PER_PAGE);
+    }
+    const rowOffset: u32 = rowNum % ROWS_PER_PAGE;
+    return &(table.pages[pageNum].?)[rowOffset];
+}
+
+fn newTable(allocator: *std.mem.Allocator) !*Table {
+    var table: *Table = try allocator.create(Table);
+    table.numRows = 0;
+    for (table.pages) |_, i| {
+        table.pages[i] = null;
+    }
+    return table;
+}
 
 fn printPrompt() void {
     std.debug.print("db > ", .{});
@@ -79,14 +126,39 @@ fn prepareStatement(line: []u8, statement: *Statement) !void {
     }
 }
 
-fn executeStatement(stdout: anytype, statement: *Statement) !void {
+fn executeInsert(allocator: *std.mem.Allocator, statement: *Statement, table: *Table) !void {
+    if (table.numRows >= TABLE_MAX_ROWS) {
+        return FrontendErrors.TableFull;
+    }
+
+    const freeRow: *Row = try rowSlot(allocator, table, table.numRows);
+    saveRow(&statement.row, freeRow);
+    table.numRows += 1;
+}
+
+fn printRow(stdout: anytype, row: *Row) !void {
+    try stdout.print("Row: {d}, {s}, {s}\n", .{ row.id, row.username, row.email });
+}
+
+fn executeSelect(allocator: *std.mem.Allocator, stdout: anytype, statement: *Statement, table: *Table) !void {
+    var row: Row = .{};
+    var i: u32 = 0;
+    while (i < table.numRows): (i += 1) {
+        const currRow: *Row = try rowSlot(allocator, table, i);
+        loadRow(currRow, &row);
+        try printRow(stdout, &row);
+    }
+}
+
+fn executeStatement(allocator: *std.mem.Allocator, stdout: anytype, statement: *Statement, table: *Table) !void {
     switch (statement.type) {
         StatementType.INSERT => {
-            try stdout.print("Executing insert with values id {d} username {s} email {s}.\n",
-                .{ statement.row.id, statement.row.username, statement.row.email });
+            try stdout.print("Executing insert.\n", .{});
+            try executeInsert(allocator, statement, table);
         },
         StatementType.SELECT => {
             try stdout.print("Executing select.\n", .{});
+            try executeSelect(allocator, stdout, statement, table);
         },
     }
 }
@@ -105,6 +177,9 @@ pub fn main() !void {
     // Using bufferedReader for performance
     var bufReader = std.io.bufferedReader(stdin);
     const pBufStream = &bufReader.reader();
+
+    const table: *Table = try newTable(pAllocator);
+    defer pAllocator.destroy(table);
 
     while (true) {
         printPrompt();
@@ -133,7 +208,7 @@ pub fn main() !void {
                 continue;
             };
 
-            executeStatement(&stdout, &statement) catch |err| {
+            executeStatement(pAllocator, &stdout, &statement, table) catch |err| {
                 try stdout.print("Error executing command: {s}.\n", .{ line });
                 continue;
             };
