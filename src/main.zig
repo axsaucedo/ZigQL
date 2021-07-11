@@ -36,10 +36,12 @@ pub fn main() !void {
         var line: []u8 = readInput(pBufStream, pAllocator);
         defer pAllocator.free(line);
 
-        if (std.mem.eql(u8, line, ".exit")) { break; }
-
-        try stdout.print("Input from alloc: {s} with length {}\n", .{ line, line.len });
+        if (std.mem.eql(u8, line, ".exit")) {
+            try stdout.print("Exiting ZigQL prompt.\n", .{});
+            break;
+        }
+        else {
+            try stdout.print("Unrecognized command: {s}.\n", .{ line });
+        }
     }
-
-    try stdout.print("Exiting ZigQL prompt.\n", .{});
 }
