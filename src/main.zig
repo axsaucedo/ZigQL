@@ -1,11 +1,12 @@
 
 const std = @import("std");
 
-const FrontendErrors = error {
+const ZqlError = error {
     StatementNotFound,
     StatementIncorrectSyntax,
     CommandError,
     TableFull,
+    StatementParamTooLong,
 };
 
 const COLUMN_USERNAME_SIZE = 32;
@@ -76,8 +77,8 @@ fn newTable(allocator: *std.mem.Allocator) !*Table {
     return table;
 }
 
-fn printPrompt() void {
-    std.debug.print("db > ", .{});
+fn printPrompt(stdout: std.fs.File.Writer) !void {
+    try stdout.print("db > ", .{});
 }
 
 fn readInput(bufStream: anytype, allocator: *std.mem.Allocator) []u8 {
@@ -87,30 +88,36 @@ fn readInput(bufStream: anytype, allocator: *std.mem.Allocator) []u8 {
     return line.?;
 }
 
-fn doMetaCommand(stdout: anytype, line: []u8) !void {
+fn doMetaCommand(stdout: std.fs.File.Writer, line: []u8) !void {
     if (std.mem.eql(u8, line, ".exit")) {
         try stdout.print("Exiting ZigQL prompt.\n", .{});
         std.process.exit(0);
     }
     else {
         // TODO: Throw and catch more specific error
-        return FrontendErrors.CommandError;
+        return ZqlError.CommandError;
     }
 }
 
 fn prepareStatement(line: []u8, statement: *Statement) !void {
     if (line.len < 6) {
-        return FrontendErrors.StatementNotFound;
+        return ZqlError.StatementNotFound;
     }
     else if (std.mem.eql(u8, line[0..6], "insert")) {
         var tokens = std.mem.tokenize(line, " ");
-        const initStatement = tokens.next() orelse return FrontendErrors.StatementIncorrectSyntax;
-        const idRaw = tokens.next() orelse return FrontendErrors.StatementIncorrectSyntax;
-        const id = std.fmt.parseInt(u32, idRaw, 10) catch |err| return FrontendErrors.StatementIncorrectSyntax;
-        const username = tokens.next() orelse return FrontendErrors.StatementIncorrectSyntax;
-        const email = tokens.next() orelse return FrontendErrors.StatementIncorrectSyntax;
+        const initStatement = tokens.next() orelse return ZqlError.StatementIncorrectSyntax;
+        const idRaw = tokens.next() orelse return ZqlError.StatementIncorrectSyntax;
+        const id = std.fmt.parseInt(u32, idRaw, 10) catch |err| return ZqlError.StatementIncorrectSyntax;
+        const username = tokens.next() orelse return ZqlError.StatementIncorrectSyntax;
+        if (username.len > COLUMN_USERNAME_SIZE) {
+            return ZqlError.StatementParamTooLong;
+        }
+        const email = tokens.next() orelse return ZqlError.StatementIncorrectSyntax;
+        if (username.len > COLUMN_EMAIL_SIZE) {
+            return ZqlError.StatementParamTooLong;
+        }
         // If there are more elements we can return syntax error
-        if (tokens.next() != null) { return FrontendErrors.StatementIncorrectSyntax; }
+        if (tokens.next() != null) { return ZqlError.StatementIncorrectSyntax; }
 
         statement.type = StatementType.INSERT;
         statement.row.id = id;
@@ -122,13 +129,13 @@ fn prepareStatement(line: []u8, statement: *Statement) !void {
     }
     else {
         // TODO: Throw and catch more specific error
-        return FrontendErrors.StatementNotFound;
+        return ZqlError.StatementNotFound;
     }
 }
 
 fn executeInsert(allocator: *std.mem.Allocator, statement: *Statement, table: *Table) !void {
     if (table.numRows >= TABLE_MAX_ROWS) {
-        return FrontendErrors.TableFull;
+        return ZqlError.TableFull;
     }
 
     const freeRow: *Row = try rowSlot(allocator, table, table.numRows);
@@ -136,11 +143,11 @@ fn executeInsert(allocator: *std.mem.Allocator, statement: *Statement, table: *T
     table.numRows += 1;
 }
 
-fn printRow(stdout: anytype, row: *Row) !void {
+fn printRow(stdout: std.fs.File.Writer, row: *Row) !void {
     try stdout.print("Row: {d}, {s}, {s}\n", .{ row.id, row.username, row.email });
 }
 
-fn executeSelect(allocator: *std.mem.Allocator, stdout: anytype, statement: *Statement, table: *Table) !void {
+fn executeSelect(allocator: *std.mem.Allocator, stdout: std.fs.File.Writer, statement: *Statement, table: *Table) !void {
     var row: Row = .{};
     var i: u32 = 0;
     while (i < table.numRows): (i += 1) {
@@ -150,7 +157,7 @@ fn executeSelect(allocator: *std.mem.Allocator, stdout: anytype, statement: *Sta
     }
 }
 
-fn executeStatement(allocator: *std.mem.Allocator, stdout: anytype, statement: *Statement, table: *Table) !void {
+fn executeStatement(allocator: *std.mem.Allocator, stdout: std.fs.File.Writer, statement: *Statement, table: *Table) !void {
     switch (statement.type) {
         StatementType.INSERT => {
             try stdout.print("Executing insert.\n", .{});
@@ -160,6 +167,40 @@ fn executeStatement(allocator: *std.mem.Allocator, stdout: anytype, statement: *
             try stdout.print("Executing select.\n", .{});
             try executeSelect(allocator, stdout, statement, table);
         },
+    }
+}
+
+fn processLine(allocator: *std.mem.Allocator, stdin: anytype, stdout: std.fs.File.Writer, line: []u8, table: *Table) !void {
+
+    if (line[0] == '.') {
+        doMetaCommand(stdout, line) catch |err| {
+            try stdout.print("Unrecognized command: {s}.\n", .{ line });
+            return;
+        };
+    }
+    else {
+        var statement: Statement = .{};
+        prepareStatement(line, &statement) catch |err| {
+            switch(err) {
+                ZqlError.StatementNotFound => {
+                    try stdout.print("Unrecognized keyword at start of: {s}.\n", .{ line });
+                },
+                ZqlError.StatementIncorrectSyntax => {
+                    try stdout.print("Incorrect syntax on statement: {s}.\n", .{ line });
+                },
+                ZqlError.StatementParamTooLong => {
+                    try stdout.print("Parameter too long on statement: {s}.\n", .{ line });
+                },
+                else => unreachable,
+            }
+            return;
+        };
+
+        executeStatement(allocator, stdout, &statement, table) catch |err| {
+            try stdout.print("Error executing command: {s}.\n", .{ line });
+            return;
+        };
+        try stdout.print("Executed.\n", .{});
     }
 }
 
@@ -178,41 +219,15 @@ pub fn main() !void {
     var bufReader = std.io.bufferedReader(stdin);
     const pBufStream = &bufReader.reader();
 
-    const table: *Table = try newTable(pAllocator);
-    defer pAllocator.destroy(table);
+    var table: Table = (try newTable(pAllocator)).*;
+    defer pAllocator.destroy(&table);
 
     while (true) {
-        printPrompt();
+        try printPrompt(stdout);
 
         var line: []u8 = readInput(pBufStream, pAllocator);
         defer pAllocator.free(line);
 
-        if (line[0] == '.') {
-            doMetaCommand(&stdout, line) catch |err| {
-                try stdout.print("Unrecognized command: {s}.\n", .{ line });
-                continue;
-            };
-        }
-        else {
-            var statement: Statement = .{};
-            prepareStatement(line, &statement) catch |err| {
-                switch(err) {
-                    FrontendErrors.StatementNotFound => {
-                        try stdout.print("Unrecognized keyword at start of: {s}.\n", .{ line });
-                    },
-                    FrontendErrors.StatementIncorrectSyntax => {
-                        try stdout.print("Incorrect syntax on statement: {s}.\n", .{ line });
-                    },
-                    else => unreachable,
-                }
-                continue;
-            };
-
-            executeStatement(pAllocator, &stdout, &statement, table) catch |err| {
-                try stdout.print("Error executing command: {s}.\n", .{ line });
-                continue;
-            };
-            try stdout.print("Executed.\n", .{});
-        }
+        try processLine(pAllocator, stdin, stdout, line, &table);
     }
 }
