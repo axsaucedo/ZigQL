@@ -352,22 +352,24 @@ test "Test statement insert and select" {
     try processLine(testAllocator, outList.writer(), &lineInsert, pTable);
     var lineSelect: [6]u8 = "select".*;
     try processLine(testAllocator, outList.writer(), &lineSelect, pTable);
-    var lineResult: [117]u8 =
+    const lineResultTemplate: *const [118]u8 =
         \\Executing insert.
         \\Executed.
         \\Executing insert.
         \\Executed.
         \\Executing select.
-        \\Row: 1, one, two
-        \\Row: 1, one, two
+        \\Row: 1, {s}, {s}
+        \\Row: 1, {s}, {s}
         \\Executed.
-    .*;
-    // TODO: Figure out why without slices it fails
-    // TODO: Ok this is happening because of the padding
-    var items: []u8 = outList.items[0..85];
-    var cutResult: []u8 = lineResult[0..85];
-    try std.io.getStdOut().writer().print("Value:\n{d}\n{d}\n\n{s}\n\n{s}\n\n",
-        .{ items.len, cutResult.len, cutResult, items });
+        \\
+    ;
+    var username: [COLUMN_USERNAME_SIZE]u8 = std.mem.zeroes([COLUMN_USERNAME_SIZE]u8);
+    var email: [COLUMN_EMAIL_SIZE]u8 = std.mem.zeroes([COLUMN_EMAIL_SIZE]u8);
+    std.mem.copy(u8, &username, "one");
+    std.mem.copy(u8, &email, "two");
+    var lineResult = try std.fmt.allocPrint(
+        testAllocator, lineResultTemplate, .{ username, email, username, email });
+    defer testAllocator.free(lineResult);
     try std.testing.expect(
-        std.mem.eql(u8, items, cutResult));
+        std.mem.eql(u8, outList.items, lineResult));
 }
