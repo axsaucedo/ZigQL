@@ -30,37 +30,43 @@ const ROWS_PER_PAGE: u32 = PAGE_SIZE / ROW_SIZE;
 const TABLE_MAX_PAGES: u32 = 100;
 const TABLE_MAX_ROWS: u32 = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
-const Table = struct {
-    numRows: u32,
-    pages: [TABLE_MAX_PAGES]?[]Row,
-};
-
 //const Table = struct {
 //    numRows: u32,
-//    pages: [TABLE_MAX_PAGES][ROWS_PER_PAGE * 8]u8,
-//    allocator: *std.mem.Allocator,
-//
-//    const Self = @This();
-//
-//    pub fn init(allocator: *std.mem.Allocator) Self {
-//        var self = Self {
-//            .allocator = allocator,
-//            .numRows = 0,
-//            .pages = [TABLE_MAX_PAGES]?null,
-//        };
-//        //var self: Self = try allocator.create(Self);
-//        for (self.pages) |_, i| {
-//            self.pages[i] = null;
-//        }
-//        return self;
-//    }
-//
-//    pub fn deinit(self: Self) void {
-//        for (table.pages) |*page, i| {
-//            self.allocator.destroy(page);
-//        }
-//    }
+//    pages: [TABLE_MAX_PAGES]?[]Row,
 //};
+
+const Table = struct {
+    numRows: u32,
+    pages: std.ArrayList(?std.ArrayList(?Row)),
+    allocator: *std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: *std.mem.Allocator) !Self {
+        var self = Self {
+            .allocator = allocator,
+            .numRows = 0,
+            // Starting initCapacity to start an arraylist of nulls and initialising all with nulls
+            .pages = try std.ArrayList(?std.ArrayList(?Row)).initCapacity(allocator, TABLE_MAX_PAGES),
+        };
+        // Initialise all the pages to TABLE_MAX_PAGES with null values so they can be accessed
+        var i: usize = 0;
+        while (i < 10) : (i += 1) {
+            try self.pages.append(null);
+        }
+        return self;
+    }
+
+    pub fn deinit(self: Self) void {
+        for (self.pages.items) |page, i| {
+            // Only deinit pages that are not null
+            if (page != null) {
+                page.?.deinit();
+            }
+        }
+        self.pages.deinit();
+    }
+};
 
 const Statement = struct {
     type: StatementType = StatementType.SELECT,
@@ -70,48 +76,27 @@ const Statement = struct {
 // TODO: Make customizable
 const MAX_INPUT_SIZE: usize = 1000;
 
-fn saveRow(source: *Row, destination: *Row) void {
-    const sourceSingSlice: *[1]Row = source;
-    const sourceSlice: []Row = sourceSingSlice;
-    const destinationSingSlice: *[1]Row = destination;
-    const destinationSlice: []Row =  destinationSingSlice;
-    std.mem.copy(Row, destinationSlice, sourceSingSlice);
+fn saveRow(source: *Row, destination: *?Row) void {
+    destination.* = source.*;
 }
 
-fn loadRow(source: *Row, destination: *Row) void {
-    const sourceSingSlice: *[1]Row = source;
-    const sourceSlice: []Row = sourceSingSlice;
-    const destinationSingSlice: *[1]Row = destination;
-    const destinationSlice: []Row =  destinationSingSlice;
-    std.mem.copy(Row, destinationSlice, sourceSingSlice);
+fn loadRow(source: *?Row, destination: *Row) void {
+    destination.* = source.*.?;
 }
 
-fn rowSlot(allocator: *std.mem.Allocator, table: *Table, rowNum: u32) !*Row {
+fn rowSlot(allocator: *std.mem.Allocator, table: *Table, rowNum: u32) !*?Row {
     const pageNum: u32 = rowNum / ROWS_PER_PAGE;
     // TODO: Check max age
-    if (table.pages[pageNum] == null) {
-        table.pages[pageNum] = try allocator.alloc(Row, ROWS_PER_PAGE);
-    }
-    const rowOffset: u32 = rowNum % ROWS_PER_PAGE;
-    return &(table.pages[pageNum].?)[rowOffset];
-}
-
-fn newTable(allocator: *std.mem.Allocator) !*Table {
-    var table: *Table = try allocator.create(Table);
-    table.numRows = 0;
-    for (table.pages) |_, i| {
-        table.pages[i] = null;
-    }
-    return table;
-}
-
-fn freeTable(allocator: *std.mem.Allocator, table: *Table) void {
-    for (table.pages) |_, i| {
-        if (table.pages[i] != null) {
-            allocator.free(table.pages[i].?);
+    if (table.pages.items[pageNum] == null) {
+        table.pages.items[pageNum] = try std.ArrayList(?Row).initCapacity(allocator, ROWS_PER_PAGE);
+        // Initialise all to null so they can be accessed as required
+        var i: usize = 0;
+        while (i < ROWS_PER_PAGE) : (i += 1) {
+            try table.pages.items[pageNum].?.append(null);
         }
     }
-    allocator.destroy(table);
+    const rowOffset: u32 = rowNum % ROWS_PER_PAGE;
+    return &(table.pages.items[pageNum].?.items[rowOffset]);
 }
 
 fn printPrompt(stdout: anytype) !void {
@@ -176,8 +161,8 @@ fn executeInsert(allocator: *std.mem.Allocator, statement: *Statement, table: *T
         return ZqlError.TableFull;
     }
 
-    const freeRow: *Row = try rowSlot(allocator, table, table.numRows);
-    saveRow(&statement.row, freeRow);
+    var pFreeRow: *?Row = try rowSlot(allocator, table, table.numRows);
+    saveRow(&statement.row, pFreeRow);
     table.numRows += 1;
 }
 
@@ -189,8 +174,8 @@ fn executeSelect(allocator: *std.mem.Allocator, stdout: anytype, statement: *Sta
     var row: Row = .{};
     var i: u32 = 0;
     while (i < table.numRows): (i += 1) {
-        const currRow: *Row = try rowSlot(allocator, table, i);
-        loadRow(currRow, &row);
+        var pCurrRow: *?Row = try rowSlot(allocator, table, i);
+        loadRow(pCurrRow, &row);
         try printRow(stdout, &row);
     }
 }
@@ -260,8 +245,8 @@ pub fn main() !void {
     var bufReader = std.io.bufferedReader(stdin);
     const pBufStream = &bufReader.reader();
 
-    var pTable: *Table = try newTable(pAllocator);
-    defer freeTable(pAllocator, pTable);
+    var table: *Table = &(try Table.init(pAllocator));
+    defer table.deinit();
 
     while (true) {
         try printPrompt(stdout);
@@ -269,7 +254,7 @@ pub fn main() !void {
         var line: []u8 = readInput(pBufStream, pAllocator);
         defer pAllocator.free(line);
 
-        try processLine(pAllocator, stdout, line, pTable);
+        try processLine(pAllocator, stdout, line, table);
     }
 }
 
@@ -279,11 +264,11 @@ test "Test statement error" {
     var outList = std.ArrayList(u8).init(testAllocator);
     defer outList.deinit();
 
-    var pTable: *Table = try newTable(testAllocator);
-    defer freeTable(testAllocator, pTable);
+    var table: *Table = &(try Table.init(testAllocator));
+    defer table.deinit();
 
     var line: [11]u8 = "Hello world".*;
-    try processLine(testAllocator, outList.writer(), &line, pTable);
+    try processLine(testAllocator, outList.writer(), &line, table);
     try std.testing.expect(
         std.mem.eql(u8, outList.items, "Unrecognized keyword at start of: Hello world.\n"));
 }
@@ -293,11 +278,11 @@ test "Test statement error" {
     var outList = std.ArrayList(u8).init(testAllocator);
     defer outList.deinit();
 
-    var pTable: *Table = try newTable(testAllocator);
-    defer freeTable(testAllocator, pTable);
+    var table: *Table = &(try Table.init(testAllocator));
+    defer table.deinit();
 
     var line: [10]u8 = ".nocommand".*;
-    try processLine(testAllocator, outList.writer(), &line, pTable);
+    try processLine(testAllocator, outList.writer(), &line, table);
     try std.testing.expect(
         std.mem.eql(u8, outList.items, "Unrecognized command: .nocommand.\n"));
 }
@@ -307,11 +292,11 @@ test "Test statement select" {
     var outList = std.ArrayList(u8).init(testAllocator);
     defer outList.deinit();
 
-    var pTable: *Table = try newTable(testAllocator);
-    defer freeTable(testAllocator, pTable);
+    var table: *Table = &(try Table.init(testAllocator));
+    defer table.deinit();
 
     var line: [6]u8 = "select".*;
-    try processLine(testAllocator, outList.writer(), &line, pTable);
+    try processLine(testAllocator, outList.writer(), &line, table);
     try std.testing.expect(
         std.mem.eql(u8, outList.items, "Executing select.\nExecuted.\n"));
 }
@@ -321,11 +306,11 @@ test "Test statement insert error no args" {
     var outList = std.ArrayList(u8).init(testAllocator);
     defer outList.deinit();
 
-    var pTable: *Table = try newTable(testAllocator);
-    defer freeTable(testAllocator, pTable);
+    var table: *Table = &(try Table.init(testAllocator));
+    defer table.deinit();
 
     var line: [6]u8 = "insert".*;
-    try processLine(testAllocator, outList.writer(), &line, pTable);
+    try processLine(testAllocator, outList.writer(), &line, table);
     try std.testing.expect(
         std.mem.eql(u8, outList.items, "Incorrect statement: insert.\n"));
 }
@@ -335,11 +320,11 @@ test "Test statement insert error too many args" {
     var outList = std.ArrayList(u8).init(testAllocator);
     defer outList.deinit();
 
-    var pTable: *Table = try newTable(testAllocator);
-    defer freeTable(testAllocator, pTable);
+    var table: *Table = &(try Table.init(testAllocator));
+    defer table.deinit();
 
     var line: [22]u8 = "insert 1 one two three".*;
-    try processLine(testAllocator, outList.writer(), &line, pTable);
+    try processLine(testAllocator, outList.writer(), &line, table);
     try std.testing.expect(
         std.mem.eql(u8, outList.items, "Incorrect statement: insert 1 one two three.\n"));
 }
@@ -349,11 +334,11 @@ test "Test statement insert error negative ID" {
     var outList = std.ArrayList(u8).init(testAllocator);
     defer outList.deinit();
 
-    var pTable: *Table = try newTable(testAllocator);
-    defer freeTable(testAllocator, pTable);
+    var table: *Table = &(try Table.init(testAllocator));
+    defer table.deinit();
 
     var line: [23]u8 = "insert -1 one two three".*;
-    try processLine(testAllocator, outList.writer(), &line, pTable);
+    try processLine(testAllocator, outList.writer(), &line, table);
     try std.testing.expect(
         std.mem.eql(u8, outList.items, "Incorrect statement: ID must be positive.\n"));
 }
@@ -363,8 +348,8 @@ test "Test statement insert and select" {
     var outList = std.ArrayList(u8).init(testAllocator);
     defer outList.deinit();
 
-    var pTable: *Table = try newTable(testAllocator);
-    defer freeTable(testAllocator, pTable);
+    var table: *Table = &(try Table.init(testAllocator));
+    defer table.deinit();
 
     const testUsername: [4]u8 = "user".*;
     const testEmail: [17]u8 = "email@example.com".*;
@@ -374,10 +359,10 @@ test "Test statement insert and select" {
         "insert 1 {s} {s}",
         .{ &testUsername, &testEmail });
     defer testAllocator.free(lineInsert);
-    try processLine(testAllocator, outList.writer(), lineInsert, pTable);
-    try processLine(testAllocator, outList.writer(), lineInsert, pTable);
+    try processLine(testAllocator, outList.writer(), lineInsert, table);
+    try processLine(testAllocator, outList.writer(), lineInsert, table);
     var lineSelect: [6]u8 = "select".*;
-    try processLine(testAllocator, outList.writer(), &lineSelect, pTable);
+    try processLine(testAllocator, outList.writer(), &lineSelect, table);
     const lineResultTemplate: *const [118]u8 =
         \\Executing insert.
         \\Executed.
@@ -409,8 +394,8 @@ test "Test statement insert and select" {
 //     var outList = std.ArrayList(u8).init(testAllocator);
 //     defer outList.deinit();
 // 
-//     var pTable: *Table = try newTable(testAllocator);
-//     defer freeTable(testAllocator, pTable);
+//     var table: *Table = Table.init(testAllocator);
+//     defer table.deinit();
 // 
 //     var testUsernameTooLong: [COLUMN_USERNAME_SIZE+1]u8 =
 //         std.mem.zeroes([COLUMN_USERNAME_SIZE+1]u8);
@@ -423,8 +408,8 @@ test "Test statement insert and select" {
 //         "insert 1 {s} {s}",
 //         .{ &testUsernameTooLong, &testEmail });
 //     defer testAllocator.free(lineInsert);
-//     try processLine(testAllocator, outList.writer(), lineInsert, pTable);
-//     try processLine(testAllocator, outList.writer(), lineInsert, pTable);
+//     try processLine(testAllocator, outList.writer(), lineInsert, table);
+//     try processLine(testAllocator, outList.writer(), lineInsert, table);
 //     const lineResultTemplate: *const [51]u8 =
 //         "Parameter too long on statement: insert 1 {s} {s}.\n";
 //     var username: [COLUMN_USERNAME_SIZE+1]u8 = std.mem.zeroes([COLUMN_USERNAME_SIZE+1]u8);
