@@ -347,9 +347,16 @@ test "Test statement insert and select" {
     var pTable: *Table = try newTable(testAllocator);
     defer freeTable(testAllocator, pTable);
 
-    var lineInsert: [16]u8 = "insert 1 one two".*;
-    try processLine(testAllocator, outList.writer(), &lineInsert, pTable);
-    try processLine(testAllocator, outList.writer(), &lineInsert, pTable);
+    const testUsername: [4]u8 = "user".*;
+    const testEmail: [17]u8 = "email@example.com".*;
+
+    var lineInsert: []u8 = try std.fmt.allocPrint(
+        testAllocator,
+        "insert 1 {s} {s}",
+        .{ &testUsername, &testEmail });
+    defer testAllocator.free(lineInsert);
+    try processLine(testAllocator, outList.writer(), lineInsert, pTable);
+    try processLine(testAllocator, outList.writer(), lineInsert, pTable);
     var lineSelect: [6]u8 = "select".*;
     try processLine(testAllocator, outList.writer(), &lineSelect, pTable);
     const lineResultTemplate: *const [118]u8 =
@@ -365,11 +372,50 @@ test "Test statement insert and select" {
     ;
     var username: [COLUMN_USERNAME_SIZE]u8 = std.mem.zeroes([COLUMN_USERNAME_SIZE]u8);
     var email: [COLUMN_EMAIL_SIZE]u8 = std.mem.zeroes([COLUMN_EMAIL_SIZE]u8);
-    std.mem.copy(u8, &username, "one");
-    std.mem.copy(u8, &email, "two");
-    var lineResult = try std.fmt.allocPrint(
+    std.mem.copy(u8, &username, &testUsername);
+    std.mem.copy(u8, &email, &testEmail);
+    var lineResult: []u8 = try std.fmt.allocPrint(
         testAllocator, lineResultTemplate, .{ username, email, username, email });
     defer testAllocator.free(lineResult);
     try std.testing.expect(
         std.mem.eql(u8, outList.items, lineResult));
 }
+
+// Currently needs to be extended to add the buffer
+// 190 333 Parameter too long on statement: insert 1 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA email@example.com.
+// Parameter too long on statement: insert 1 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA email@example.com.
+// test "Test statement insert param too long"... FAIL (TestUnexpectedResult)
+// test "Test statement insert param too long" {
+//     const testAllocator = std.testing.allocator;
+//     var outList = std.ArrayList(u8).init(testAllocator);
+//     defer outList.deinit();
+// 
+//     var pTable: *Table = try newTable(testAllocator);
+//     defer freeTable(testAllocator, pTable);
+// 
+//     var testUsernameTooLong: [COLUMN_USERNAME_SIZE+1]u8 =
+//         std.mem.zeroes([COLUMN_USERNAME_SIZE+1]u8);
+//     std.mem.set(u8, &testUsernameTooLong, 'A');
+// 
+//     const testEmail: [17]u8 = "email@example.com".*;
+// 
+//     var lineInsert: []u8 = try std.fmt.allocPrint(
+//         testAllocator,
+//         "insert 1 {s} {s}",
+//         .{ &testUsernameTooLong, &testEmail });
+//     defer testAllocator.free(lineInsert);
+//     try processLine(testAllocator, outList.writer(), lineInsert, pTable);
+//     try processLine(testAllocator, outList.writer(), lineInsert, pTable);
+//     const lineResultTemplate: *const [51]u8 =
+//         "Parameter too long on statement: insert 1 {s} {s}.\n";
+//     var username: [COLUMN_USERNAME_SIZE+1]u8 = std.mem.zeroes([COLUMN_USERNAME_SIZE+1]u8);
+//     var email: [COLUMN_EMAIL_SIZE]u8 = std.mem.zeroes([COLUMN_EMAIL_SIZE]u8);
+//     std.mem.copy(u8, &username, &testUsernameTooLong);
+//     std.mem.copy(u8, &email, &testEmail);
+//     var lineResult: []u8 = try std.fmt.allocPrint(
+//         testAllocator, lineResultTemplate, .{ testUsernameTooLong, email });
+//     defer testAllocator.free(lineResult);
+//     std.debug.print("{d} {d} {s}", .{ outList.items.len, lineResult.len, outList.items });
+//     try std.testing.expect(
+//         std.mem.eql(u8, outList.items, lineResult));
+// }
