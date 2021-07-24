@@ -7,6 +7,7 @@ const ZqlError = error {
     CommandError,
     TableFull,
     StatementParamTooLong,
+    StatementErrorNegativeValue,
 };
 
 const COLUMN_USERNAME_SIZE = 32;
@@ -143,7 +144,8 @@ fn prepareStatement(line: []u8, statement: *Statement) !void {
         var tokens = std.mem.tokenize(line, " ");
         const initStatement = tokens.next() orelse return ZqlError.StatementIncorrectSyntax;
         const idRaw = tokens.next() orelse return ZqlError.StatementIncorrectSyntax;
-        const id = std.fmt.parseInt(u32, idRaw, 10) catch |err| return ZqlError.StatementIncorrectSyntax;
+        const id = std.fmt.parseInt(i32, idRaw, 10) catch |err| return ZqlError.StatementIncorrectSyntax;
+        if (id < 0) return ZqlError.StatementErrorNegativeValue;
         const username = tokens.next() orelse return ZqlError.StatementIncorrectSyntax;
         if (username.len > COLUMN_USERNAME_SIZE) {
             return ZqlError.StatementParamTooLong;
@@ -156,7 +158,7 @@ fn prepareStatement(line: []u8, statement: *Statement) !void {
         if (tokens.next() != null) { return ZqlError.StatementIncorrectSyntax; }
 
         statement.type = StatementType.INSERT;
-        statement.row.id = id;
+        statement.row.id = @intCast(u32, id);
         std.mem.copy(u8, statement.row.username[0..], username);
         std.mem.copy(u8, statement.row.email[0..], email);
     }
@@ -222,10 +224,13 @@ fn processLine(allocator: *std.mem.Allocator, stdout: anytype, line: []u8, table
                     try stdout.print("Unrecognized keyword at start of: {s}.\n", .{ line });
                 },
                 ZqlError.StatementIncorrectSyntax => {
-                    try stdout.print("Incorrect syntax on statement: {s}.\n", .{ line });
+                    try stdout.print("Incorrect statement: {s}.\n", .{ line });
                 },
                 ZqlError.StatementParamTooLong => {
                     try stdout.print("Parameter too long on statement: {s}.\n", .{ line });
+                },
+                ZqlError.StatementErrorNegativeValue => {
+                    try stdout.print("Incorrect statement: ID must be positive.\n", .{});
                 },
                 else => unreachable,
             }
@@ -322,7 +327,7 @@ test "Test statement insert error no args" {
     var line: [6]u8 = "insert".*;
     try processLine(testAllocator, outList.writer(), &line, pTable);
     try std.testing.expect(
-        std.mem.eql(u8, outList.items, "Incorrect syntax on statement: insert.\n"));
+        std.mem.eql(u8, outList.items, "Incorrect statement: insert.\n"));
 }
 
 test "Test statement insert error too many args" {
@@ -336,7 +341,21 @@ test "Test statement insert error too many args" {
     var line: [22]u8 = "insert 1 one two three".*;
     try processLine(testAllocator, outList.writer(), &line, pTable);
     try std.testing.expect(
-        std.mem.eql(u8, outList.items, "Incorrect syntax on statement: insert 1 one two three.\n"));
+        std.mem.eql(u8, outList.items, "Incorrect statement: insert 1 one two three.\n"));
+}
+
+test "Test statement insert error negative ID" {
+    const testAllocator = std.testing.allocator;
+    var outList = std.ArrayList(u8).init(testAllocator);
+    defer outList.deinit();
+
+    var pTable: *Table = try newTable(testAllocator);
+    defer freeTable(testAllocator, pTable);
+
+    var line: [23]u8 = "insert -1 one two three".*;
+    try processLine(testAllocator, outList.writer(), &line, pTable);
+    try std.testing.expect(
+        std.mem.eql(u8, outList.items, "Incorrect statement: ID must be positive.\n"));
 }
 
 test "Test statement insert and select" {
